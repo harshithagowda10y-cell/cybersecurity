@@ -1,0 +1,6 @@
+{
+  "name": "MAS-CSI Cyber Intelligence Platform",
+  "description": "Multi-Agent Systems for Cyber Security Intelligence: Evidence-driven real-time SOC, 7-agent investigation, forensic SHA-256 verification, and controlled lab framework.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
