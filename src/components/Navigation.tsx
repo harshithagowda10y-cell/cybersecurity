@@ -28,7 +28,8 @@ import {
   Radio,
   Eye,
   EyeOff,
-  User
+  User,
+  Mail
 } from 'lucide-react';
 import { store } from '../services/store';
 import { AttackScenario, PageId, UserRole } from '../types/mas_csi';
@@ -40,6 +41,7 @@ interface NavigationProps {
   onNavigate: (page: PageId) => void;
   onOpenZipModal: () => void;
   onOpenRoleModal: () => void;
+  onOpenEmailInbox: () => void;
   is3dEnabled: boolean;
   onToggle3d: () => void;
   activeIncidentCount: number;
@@ -50,6 +52,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   onNavigate,
   onOpenZipModal,
   onOpenRoleModal,
+  onOpenEmailInbox,
   is3dEnabled,
   onToggle3d,
   activeIncidentCount,
@@ -176,6 +179,21 @@ export const Navigation: React.FC<NavigationProps> = ({
                 : '37.7749° N, -122.4194° W'}
             </span>
           </div>
+
+          {/* Corporate Secure Webmail & 2FA OTP Mailbox Button */}
+          <button
+            onClick={onOpenEmailInbox}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono font-semibold transition cursor-pointer border bg-slate-900 border-cyan-700/60 hover:bg-slate-800 text-cyan-300 relative shadow-xs"
+            title="Corporate Secure Webmail: Inspect delivered 2FA OTP codes & security notifications"
+          >
+            <Mail className="w-3.5 h-3.5 text-cyan-400" />
+            <span>OTP Mailbox</span>
+            {store.dispatchedEmails.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-cyan-500 text-slate-950 font-bold text-[9px]">
+                {store.dispatchedEmails.length}
+              </span>
+            )}
+          </button>
 
           {/* Persona / Role Login Portal Trigger */}
           <button

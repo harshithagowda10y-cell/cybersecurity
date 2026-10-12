@@ -14,11 +14,32 @@ const PORT = 3000;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Server User Model with security telemetry
+export interface ServerUser {
+  user_id: string;
+  username: string;
+  email: string;
+  role: string;
+  password_hash: string;
+  is_suspended: boolean;
+  login_enabled: boolean;
+  totp_secret?: string;
+  last_login?: string | null;
+  last_login_formatted_time?: string | null;
+  last_location?: string | null;
+  last_latitude?: number | null;
+  last_longitude?: number | null;
+  last_accuracy?: number | null;
+  is_outside_organization?: boolean;
+}
+
 // In-memory backend database
 const db = {
   events: [] as any[],
   incidents: [] as any[],
   evidenceVault: [] as any[],
+  fileNotifications: [] as any[],
+  dispatchedEmails: [] as any[],
   users: [
     {
       user_id: 'USR-001',
@@ -56,7 +77,7 @@ const db = {
       is_suspended: false,
       login_enabled: true,
     },
-  ],
+  ] as ServerUser[],
   auditLogs: [] as any[],
   files: [
     {
@@ -163,8 +184,141 @@ app.get('/api/evidence/:id/verify', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// REAL LAB & SECURE FILE VAULT APIs
+// USER REGISTRATION & EMAIL OTP DISPATCH APIs
 // -------------------------------------------------------------
+
+// User Registration: Must be registered before accessing the secure lab
+app.post('/api/auth/register', (req, res) => {
+  const { username, email, password, role } = req.body;
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'Username, email, and password are required for registration.' });
+  }
+
+  const existing = db.users.find(u => u.username.toLowerCase() === username.toLowerCase() || u.email.toLowerCase() === email.toLowerCase());
+  if (existing) {
+    return res.status(400).json({ error: 'An account with this username or email is already registered.' });
+  }
+
+  const hash = crypto.createHash('sha256').update(password).digest('hex');
+  const newUser: ServerUser = {
+    user_id: `USR-${Date.now().toString().slice(-4)}`,
+    username,
+    email,
+    role: role || 'Employee',
+    password_hash: hash,
+    is_suspended: false,
+    login_enabled: true,
+    totp_secret: 'GEZDGNBVGY3TQOJQ',
+  };
+
+  db.users.push(newUser);
+
+  // Send onboarding welcome email to registered email address
+  const welcomeEmail = {
+    email_id: `EML-WELCOME-${Date.now().toString().slice(-5)}`,
+    to_email: email,
+    to_username: username,
+    from_address: 'MAS-CSI Security Sentinel <security-auth@mas-csi.internal>',
+    subject: `[MAS-CSI Security] Account Successfully Registered - Clearance: ${newUser.role}`,
+    timestamp: new Date().toISOString(),
+    formatted_time: new Date().toLocaleString(),
+    expires_at: 'NEVER',
+    body_text: `Welcome to MAS-CSI Cyber Intelligence Platform, ${username}.\nYour account has been officially registered with role [${newUser.role}].\nWhen logging in, two-factor authentication (2FA) verification codes will be sent to this registered address: ${email}.\nPlease keep your credentials confidential.`,
+    is_read: false,
+    email_type: 'WELCOME_REGISTRATION'
+  };
+  db.dispatchedEmails.unshift(welcomeEmail);
+
+  // Record registration event
+  db.events.unshift({
+    event_id: `EVT-REG-${Date.now().toString().slice(-4)}`,
+    timestamp: new Date().toISOString(),
+    event_type: 'user_registration',
+    severity: 'INFO',
+    username,
+    message: `New identity registered in directory: ${username} (${email}) with role [${newUser.role}]. Welcome email dispatched.`,
+  });
+
+  res.status(201).json({
+    status: 'REGISTERED',
+    user: {
+      user_id: newUser.user_id,
+      username: newUser.username,
+      email: newUser.email,
+      role: newUser.role,
+    },
+    message: `Account registered successfully! Welcome email sent to ${email}.`,
+  });
+});
+
+// Send OTP to registered user's email address
+app.post('/api/auth/send-otp', (req, res) => {
+  const { username, location_label, latitude, longitude } = req.body;
+  if (!username) {
+    return res.status(400).json({ error: 'Username is required to dispatch OTP.' });
+  }
+
+  const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+  if (!user) {
+    // Audit attempt from unregistered identity
+    db.events.unshift({
+      event_id: `EVT-UNREG-OTP-${Date.now().toString().slice(-4)}`,
+      timestamp: new Date().toISOString(),
+      event_type: 'unregistered_access_attempt',
+      severity: 'HIGH',
+      username,
+      message: `[BLOCKED] Unregistered entity '${username}' attempted to request a 2FA OTP code. Request denied.`,
+    });
+    return res.status(404).json({
+      error: 'Account not found: You must be registered first in the directory before you can request an OTP or access the system.',
+      notRegistered: true,
+    });
+  }
+
+  // Generate 6-digit cryptographic OTP code
+  const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toLocaleTimeString();
+
+  const otpEmail = {
+    email_id: `EML-OTP-${Date.now().toString().slice(-5)}`,
+    to_email: user.email,
+    to_username: user.username,
+    from_address: 'MAS-CSI Zero-Trust Auth Sentinel <security-auth@mas-csi.internal>',
+    subject: `[MAS-CSI 2FA Passcode] Your One-Time Verification Code: ${otpCode}`,
+    otp_code: otpCode,
+    timestamp: now.toISOString(),
+    formatted_time: now.toLocaleString(),
+    expires_at: expiresAt,
+    location_label: location_label || (latitude ? `${latitude.toFixed(4)}°, ${longitude.toFixed(4)}°` : 'San Francisco Lab HQ'),
+    body_text: `Security Alert: A login attempt was initiated for user '${user.username}'.\n\nYour 6-Digit Secondary Verification Passcode is: ${otpCode}\n\nValid for 5 minutes (until ${expiresAt}).\nOriginating Location: ${location_label || 'Corporate Workstation'}\nIf you did not initiate this request, notify the Super Admin SOC immediately.`,
+    is_read: false,
+    email_type: 'OTP_VERIFICATION'
+  };
+
+  db.dispatchedEmails.unshift(otpEmail);
+
+  res.json({
+    status: 'DISPATCHED',
+    message: `6-digit OTP code dispatched to registered email: ${user.email}`,
+    to_email: user.email,
+    email_id: otpEmail.email_id,
+    otp_code: otpCode,
+    email: otpEmail,
+  });
+});
+
+// List all dispatched security emails (Corporate Webmail API)
+app.get('/api/auth/emails', (req, res) => {
+  const { username, email } = req.query;
+  let list = db.dispatchedEmails;
+  if (email) {
+    list = list.filter(e => e.to_email.toLowerCase() === (email as string).toLowerCase());
+  } else if (username) {
+    list = list.filter(e => e.to_username.toLowerCase() === (username as string).toLowerCase());
+  }
+  res.json(list);
+});
 
 // Authentication for Real Lab & Roles
 app.post('/api/auth/login', (req, res) => {
@@ -176,8 +330,39 @@ app.post('/api/auth/login', (req, res) => {
   const hash = crypto.createHash('sha256').update(password).digest('hex');
   const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
 
-  if (!user || user.password_hash !== hash) {
-    // Record failed login event
+  // Strict registration verification
+  if (!user) {
+    // Record unauthorized access attempt from unregistered entity
+    db.events.unshift({
+      event_id: `EVT-UNREG-LOGIN-${Date.now().toString().slice(-4)}`,
+      timestamp: new Date().toISOString(),
+      event_type: 'unregistered_login_attempt',
+      severity: 'HIGH',
+      username: username || 'unknown',
+      source_ip: req.ip || '127.0.0.1',
+      message: `[ACCESS BLOCKED] Unregistered identity '${username}' attempted to log in without prior registration.`,
+    });
+
+    db.incidents.unshift({
+      incident_id: `INC-UNREG-${Date.now().toString().slice(-4)}`,
+      created_at: new Date().toISOString(),
+      severity: 'HIGH',
+      status: 'NEW',
+      title: `Unauthorized Access by Unregistered User: '${username}'`,
+      description: `An unauthenticated actor attempted access with unregistered username '${username}'. Identity registration is required prior to authentication.`,
+      target_user: username,
+      actor_user: username,
+      mitre_technique: 'T1078.003',
+      mitre_tactic: 'Initial Access',
+    });
+
+    return res.status(401).json({
+      error: 'Access Denied: Unregistered Identity. You must be registered first in the directory before you can log in or access the lab.',
+      notRegistered: true,
+    });
+  }
+
+  if (user.password_hash !== hash) {
     db.events.push({
       event_id: `EVT-AUTH-FAIL-${Date.now().toString().slice(-4)}`,
       timestamp: new Date().toISOString(),
@@ -185,9 +370,9 @@ app.post('/api/auth/login', (req, res) => {
       severity: 'HIGH',
       username: username || 'unknown',
       source_ip: req.ip || '127.0.0.1',
-      message: `Failed authentication attempt for username: ${username}`,
+      message: `Failed authentication attempt (password mismatch) for user: ${username}`,
     });
-    return res.status(401).json({ error: 'Invalid credentials. Access Denied to Real Lab.' });
+    return res.status(401).json({ error: 'Invalid credentials. Password mismatch.' });
   }
 
   if (user.is_suspended) {
@@ -213,6 +398,32 @@ app.post('/api/auth/login', (req, res) => {
   user.last_location = locationLabel;
   user.last_latitude = req.body.latitude || null;
   user.last_longitude = req.body.longitude || null;
+  user.is_outside_organization = req.body.is_outside_organization || false;
+
+  // If login is from outside organization, trigger immediate admin SOC incident
+  if (req.body.is_outside_organization) {
+    const geoIncId = `INC-GEO-${Date.now().toString().slice(-4)}`;
+    db.incidents.unshift({
+      incident_id: geoIncId,
+      created_at: now.toISOString(),
+      severity: 'HIGH',
+      status: 'NEW',
+      title: `Unrecognized Location / Geofence Breach: ${user.username}`,
+      description: `User '${user.username}' authenticated from outside the authorized organizational perimeter (${locationLabel}). Geographic security alert dispatched to Super Admin.`,
+      target_user: user.username,
+      actor_user: user.username,
+      mitre_technique: 'T1078',
+      mitre_tactic: 'Initial Access',
+    });
+    db.events.unshift({
+      event_id: `EVT-GEO-ALERT-${Date.now().toString().slice(-4)}`,
+      timestamp: now.toISOString(),
+      event_type: 'out_of_org_login',
+      severity: 'HIGH',
+      username: user.username,
+      message: `[OUTSIDE ORGANIZATION LOGIN] User '${user.username}' signed in from remote untrusted coordinates: ${locationLabel}`,
+    });
+  }
 
   const sessionId = `SES-${user.username.toUpperCase()}-${Date.now().toString().slice(-4)}`;
   res.json({
@@ -225,6 +436,7 @@ app.post('/api/auth/login', (req, res) => {
       last_login: user.last_login,
       last_login_formatted_time: formattedTime,
       last_location: locationLabel,
+      is_outside_organization: user.is_outside_organization,
     },
     session_id: sessionId,
   });
@@ -233,6 +445,11 @@ app.post('/api/auth/login', (req, res) => {
 // Real Lab Files: List all files
 app.get('/api/lab/files', (req, res) => {
   res.json(db.files);
+});
+
+// Real Lab Notifications: List all FIM notifications
+app.get('/api/lab/notifications', (req, res) => {
+  res.json(db.fileNotifications);
 });
 
 // Real Lab Files: Create new secure file
@@ -247,6 +464,7 @@ app.post('/api/lab/files', (req, res) => {
     file_id: `FILE-${Date.now().toString().slice(-5)}`,
     name,
     content,
+    original_content: content,
     file_type: file_type || 'TEXT',
     mime_type: mime_type || 'text/plain',
     data_url: data_url || null,
@@ -307,6 +525,22 @@ app.put('/api/lab/files/:id', (req, res) => {
       mitre_technique: 'T1565.001',
       mitre_tactic: 'Impact',
     });
+
+    // Automated FIM notification sent to Admin and File Owner
+    db.fileNotifications.unshift({
+      notification_id: `NOTIF-${Date.now().toString().slice(-5)}`,
+      file_id: file.file_id,
+      file_name: file.name,
+      original_owner: file.created_by,
+      tampered_by: username,
+      timestamp: new Date().toISOString(),
+      original_sha256: file.original_sha256,
+      tampered_sha256: newHash,
+      severity: 'CRITICAL',
+      status: 'PENDING_REVIEW',
+      message: `Integrity Drift Alert: File '${file.name}' owned by ${file.created_by} was altered by '${username}'. Original owner or Admin can revert to verified snapshot.`,
+      can_revert: true,
+    });
   }
 
   file.history.push({
@@ -343,19 +577,54 @@ app.post('/api/lab/files/:id/tamper', (req, res) => {
     action: 'MALICIOUS_TAMPER',
   });
 
+  // Automated notification to Admin & Owner
+  db.fileNotifications.unshift({
+    notification_id: `NOTIF-${Date.now().toString().slice(-5)}`,
+    file_id: file.file_id,
+    file_name: file.name,
+    original_owner: file.created_by,
+    tampered_by: attacker,
+    timestamp: new Date().toISOString(),
+    original_sha256: file.original_sha256,
+    tampered_sha256: newHash,
+    severity: 'CRITICAL',
+    status: 'PENDING_REVIEW',
+    message: `🚨 MALICIOUS INTEGRITY TAMPER: File '${file.name}' owned by ${file.created_by} tampered by '${attacker}'. SHA-256 altered from ${file.original_sha256.slice(0, 12)}... to ${newHash.slice(0, 12)}...`,
+    can_revert: true,
+  });
+
   res.json({ status: 'TAMPERED', file });
 });
 
-// Real Lab Files: Restore original file
+// Real Lab Files: Restore original file back to verified genesis content
 app.post('/api/lab/files/:id/restore', (req, res) => {
   const file = db.files.find(f => f.file_id === req.params.id);
   if (!file) return res.status(404).json({ error: 'File not found' });
 
+  // Revert back to the data the employee had stored first
+  if (file.original_content) {
+    file.content = file.original_content;
+  }
   file.current_sha256 = file.original_sha256;
   file.is_tampered = false;
   file.tampered_by = null;
   file.last_modified_by = file.created_by;
   file.last_modified_at = new Date().toISOString();
+
+  file.history.push({
+    timestamp: new Date().toISOString(),
+    modified_by: req.body.username || file.created_by,
+    sha256: file.original_sha256,
+    action: 'RESTORED_TO_ORIGINAL',
+  });
+
+  // Mark all related notifications as REVERTED
+  db.fileNotifications.forEach(n => {
+    if (n.file_id === file.file_id) {
+      n.status = 'REVERTED';
+      n.can_revert = false;
+    }
+  });
 
   res.json({ status: 'RESTORED', file });
 });

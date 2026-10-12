@@ -22,8 +22,11 @@ import {
   EmployeeSecretItem,
   SystemSecurityPolicy,
   FirewallRule,
+  FileIntegrityNotification,
+  DispatchedEmail,
 } from '../types/mas_csi';
 import { computeSha256, generateSimpleId } from './crypto';
+import { getCurrentTotp } from './totp';
 
 // Global in-memory reactive store
 class MasCsiEngine {
@@ -38,6 +41,8 @@ class MasCsiEngine {
   public auditLogs: AuditLog[] = [];
   public responseActions: ResponseAction[] = [];
   public secureFiles: SecureLabFile[] = [];
+  public fileIntegrityNotifications: FileIntegrityNotification[] = [];
+  public dispatchedEmails: DispatchedEmail[] = [];
   public employeeSecrets: EmployeeSecretItem[] = [];
   public systemSecurityPolicy: SystemSecurityPolicy = {
     emergency_lockdown_active: false,
@@ -276,6 +281,7 @@ class MasCsiEngine {
         last_modified_at: new Date(Date.now() - 3600000 * 20).toISOString(),
         last_modified_by: 'john_doe',
         original_sha256: samplePdfHash,
+        original_content: samplePdfRaw,
         current_sha256: samplePdfHash,
         is_tampered: false,
         classification: 'CONFIDENTIAL',
@@ -310,6 +316,7 @@ class MasCsiEngine {
         last_modified_at: new Date(Date.now() - 3600000 * 16).toISOString(),
         last_modified_by: 'john_doe',
         original_sha256: sampleImageHash,
+        original_content: sampleSvgImageRaw,
         current_sha256: sampleImageHash,
         is_tampered: false,
         classification: 'INTERNAL',
@@ -344,6 +351,7 @@ class MasCsiEngine {
         last_modified_at: new Date(Date.now() - 3600000 * 24).toISOString(),
         last_modified_by: 'john_doe',
         original_sha256: sampleCsvHash,
+        original_content: sampleCsvContent,
         current_sha256: sampleCsvHash,
         is_tampered: false,
         classification: 'INTERNAL',
@@ -589,22 +597,29 @@ class MasCsiEngine {
   // -------------------------------------------------------------------------
   // USER AUTH & ADMIN MANAGEMENT (Enforcing RBAC)
   // -------------------------------------------------------------------------
-  public async registerUser(username: string, email: string, passwordPlain: string, role: UserRole = 'Employee'): Promise<{ success: boolean; error?: string }> {
+  public async registerUser(username: string, email: string, passwordPlain: string, role: UserRole = 'Employee'): Promise<{ success: boolean; error?: string; user?: SecurityUser }> {
+    if (!username || !email || !passwordPlain) {
+      return { success: false, error: 'Username, email address, and password are all required.' };
+    }
     if (this.users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
-      return { success: false, error: 'Username already exists in authorized user directory.' };
+      return { success: false, error: `Account '${username}' already exists in authorized user directory. Please log in.` };
+    }
+    if (this.users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
+      return { success: false, error: `Email address '${email}' is already associated with an account. Please use a unique email or log in.` };
     }
     if (passwordPlain.length < 8) {
-      return { success: false, error: 'Password must be at least 8 characters long.' };
+      return { success: false, error: 'Password must be at least 8 characters long for zero-trust security.' };
     }
 
     const passwordHash = await computeSha256(passwordPlain);
+    const now = new Date();
     const newUser: SecurityUser = {
       user_id: generateSimpleId('USR'),
       username,
       email,
       role,
       password_hash: passwordHash,
-      created_at: new Date().toISOString(),
+      created_at: now.toISOString(),
       is_active: true,
       is_suspended: false,
       login_enabled: true,
@@ -612,15 +627,33 @@ class MasCsiEngine {
       last_login: null,
       last_ip: null,
       last_location: null,
+      totp_secret: 'GEZDGNBVGY3TQOJQ',
     };
 
     this.users.push(newUser);
+
+    // Dispatch welcome notification to the user's registered email
+    const welcomeEmail: DispatchedEmail = {
+      email_id: generateSimpleId('EML-REG'),
+      to_email: email,
+      to_username: username,
+      from_address: 'MAS-CSI Security Sentinel <security-auth@mas-csi.internal>',
+      subject: `[MAS-CSI Security] Account Successfully Registered - Clearance: ${role}`,
+      timestamp: now.toISOString(),
+      formatted_time: now.toLocaleString(),
+      expires_at: 'NEVER',
+      body_text: `Welcome to MAS-CSI Cyber Intelligence Platform, ${username}.\n\nYour account has been officially registered with role [${role}].\nPrimary Dispatch Email: ${email}\n\nWhen logging in, your secondary Time-based One-Time Passcodes (OTP) will be dispatched to this email address.\nPlease keep your credentials confidential.`,
+      is_read: false,
+      email_type: 'WELCOME_REGISTRATION'
+    };
+    this.dispatchedEmails.unshift(welcomeEmail);
+
     this.addAuditLog({
       actor_username: this.currentUser?.username || 'self_register',
       actor_role: this.currentUser?.role || 'Guest',
       action: 'USER_REGISTERED',
       target: username,
-      details: `New account created with role [${role}] and SHA-256 hashed credentials.`,
+      details: `New account '${username}' created with email [${email}] and role [${role}]. Welcome email dispatched.`,
       ip_address: '127.0.0.1',
       status: 'SUCCESS',
     });
@@ -628,10 +661,10 @@ class MasCsiEngine {
     this.recordTelemetry({
       event_type: 'user_registration',
       severity: 'INFO',
-      message: `User registration completed for account: ${username}`,
+      message: `User registration completed for account: ${username} (${email})`,
       risk_score: 5,
       detection_state: 'NORMAL',
-      detection_reason: 'Legitimate registration via authorized Real Lab',
+      detection_reason: 'Legitimate user registration into platform directory',
       source_ip: '127.0.0.1',
       destination_ip: '127.0.0.1',
       protocol: 'HTTPS',
@@ -661,18 +694,149 @@ class MasCsiEngine {
       mitre_tactic: 'N/A',
     });
 
+    // Sync with backend API
+    try {
+      await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, email, password: passwordPlain, role }),
+      });
+    } catch {
+      // Backend sync
+    }
+
     this.notify();
-    return { success: true };
+    return { success: true, user: newUser };
   }
 
-  public async loginUser(username: string, passwordPlain: string): Promise<{ success: boolean; error?: string }> {
+  // Request 2FA OTP code and send to user's registered email
+  public async requestOtpToEmail(
+    username: string,
+    locationMeta?: any
+  ): Promise<{ success: boolean; error?: string; email?: DispatchedEmail; otp_code?: string; notRegistered?: boolean }> {
+    const user = this.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+    if (!user) {
+      this.recordTelemetry({
+        event_type: 'unregistered_otp_attempt',
+        severity: 'HIGH',
+        message: `[BLOCKED] Unregistered identity '${username}' attempted to request 2FA OTP code.`,
+        risk_score: 75,
+        detection_state: 'SUSPICIOUS',
+        detection_reason: 'Unregistered user tried to bypass 2FA flow without directory registration',
+        source_ip: '127.0.0.1',
+        destination_ip: '127.0.0.1',
+        protocol: 'HTTPS',
+        source_port: 51205,
+        destination_port: 3000,
+        username,
+        device_id: 'DEV-LAB-AUTH',
+        session_id: 'SES-UNAUTH',
+        user_agent: navigator.userAgent,
+        request_method: 'POST',
+        request_path: '/api/auth/send-otp',
+        request_status: 404,
+        bytes_in: 150,
+        bytes_out: 100,
+        city: locationMeta?.city || 'Localhost',
+        country: locationMeta?.country || 'Localhost',
+        latitude: locationMeta?.latitude || null,
+        longitude: locationMeta?.longitude || null,
+        location_label: locationMeta?.label || 'Data unavailable',
+        event_source: 'Auth OTP Engine',
+        raw_event: JSON.stringify({ username, action: 'REQUEST_OTP_UNREGISTERED' }),
+        ml_label: 'Unauthorized OTP Probing',
+        ml_confidence: 0.95,
+        ml_anomaly: true,
+        evidence_quality: 'HIGH',
+        mitre_technique: 'T1078.003',
+        mitre_tactic: 'Initial Access',
+      });
+
+      return {
+        success: false,
+        error: `Access Denied: Unregistered Identity '${username}'. You must be registered first in the directory before an OTP can be generated or sent.`,
+        notRegistered: true,
+      };
+    }
+
+    const currentTotp = getCurrentTotp(user.totp_secret || 'GEZDGNBVGY3TQOJQ');
+    const otpCode = currentTotp.code;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    const emailRecord: DispatchedEmail = {
+      email_id: generateSimpleId('EML-OTP'),
+      to_email: user.email,
+      to_username: user.username,
+      from_address: 'MAS-CSI Zero-Trust Auth Sentinel <security-auth@mas-csi.internal>',
+      subject: `[MAS-CSI 2FA Code] Your One-Time Passcode: ${otpCode}`,
+      otp_code: otpCode,
+      timestamp: now.toISOString(),
+      formatted_time: now.toLocaleString(),
+      expires_at: expiresAt,
+      location_label: locationMeta?.label || locationMeta?.city || 'San Francisco Lab HQ',
+      body_text: `Security Verification Notice:\nA login attempt was initiated for user '${user.username}' with clearance [${user.role}].\n\nYour 6-Digit One-Time Passcode (OTP) is: ${otpCode}\n\nAuthorized Destination Email: ${user.email}\nValid for 5 minutes (until ${expiresAt}).\nOriginating Coordinates: ${locationMeta?.label || 'Verified Lab Workstation'}\n\nIf you did not initiate this request, notify the SOC Super Admin immediately.`,
+      is_read: false,
+      email_type: 'OTP_VERIFICATION',
+    };
+
+    this.dispatchedEmails.unshift(emailRecord);
+
+    try {
+      await fetch('/api/auth/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: user.username,
+          location_label: locationMeta?.label,
+          latitude: locationMeta?.latitude,
+          longitude: locationMeta?.longitude,
+        }),
+      });
+    } catch {
+      // Backend sync
+    }
+
+    this.notify();
+    return {
+      success: true,
+      email: emailRecord,
+      otp_code: otpCode,
+    };
+  }
+
+  public getEmailsForUser(emailOrUsername?: string): DispatchedEmail[] {
+    if (!emailOrUsername) return this.dispatchedEmails;
+    const term = emailOrUsername.toLowerCase();
+    return this.dispatchedEmails.filter(
+      e => e.to_email.toLowerCase() === term || e.to_username.toLowerCase() === term
+    );
+  }
+
+  public markEmailAsRead(emailId: string): void {
+    const email = this.dispatchedEmails.find(e => e.email_id === emailId);
+    if (email) {
+      email.is_read = true;
+      this.notify();
+    }
+  }
+
+  public async loginUser(
+    username: string,
+    passwordPlain: string,
+    options?: { simulateOutsideOrg?: boolean; locationMeta?: any }
+  ): Promise<{ success: boolean; error?: string; outsideOrgAlert?: boolean; notRegistered?: boolean }> {
     const user = this.users.find(u => u.username.toLowerCase() === username.toLowerCase());
     const hashAttempt = await computeSha256(passwordPlain);
 
     if (!user) {
-      // Record failed login telemetry
+      // Record failed login telemetry from unregistered user
       this.handleAuthFailure(username, 'Account does not exist');
-      return { success: false, error: 'Invalid credentials.' };
+      return {
+        success: false,
+        error: `Access Denied: Unregistered Identity '${username}'. You must be registered first in the directory before you can log in or access the secure environment. Please click 'Register New Account' below.`,
+        notRegistered: true,
+      };
     }
 
     if (user.is_suspended) {
@@ -698,7 +862,26 @@ class MasCsiEngine {
     }
 
     // Capture exact device geolocation and timestamp during login
-    const loc = await this.captureLoginLocation();
+    const isSimulatedOutside = options?.simulateOutsideOrg || false;
+    let loc = options?.locationMeta;
+    if (!loc) {
+      loc = await this.captureLoginLocation();
+      if (isSimulatedOutside) {
+        loc = {
+          latitude: 52.5200,
+          longitude: 13.4050,
+          accuracy: 50,
+          city: 'External Remote Hub (Unrecognized Network)',
+          country: 'Outside Authorized Zone',
+          label: 'Remote Origin (52.5200°, 13.4050°)',
+          is_real_browser: false,
+          is_outside_organization: true,
+        };
+      }
+    }
+
+    const isOutsideOrg = isSimulatedOutside || Boolean(loc.is_outside_organization);
+
     const now = new Date();
     const formattedTime = now.toLocaleString('en-US', {
       weekday: 'short',
@@ -708,6 +891,7 @@ class MasCsiEngine {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
+      fractionalSecondDigits: 3,
       timeZoneName: 'short',
     });
 
@@ -720,7 +904,8 @@ class MasCsiEngine {
     user.last_longitude = loc.longitude;
     user.last_location_accuracy_meters = loc.accuracy;
     user.last_location = `${loc.city} (${loc.latitude.toFixed(4)}°, ${loc.longitude.toFixed(4)}°)`;
-    user.last_ip = '127.0.0.1';
+    user.last_ip = isOutsideOrg ? '198.51.100.77' : '127.0.0.1';
+    user.is_outside_organization = isOutsideOrg;
     user.last_device_info = `${navigator.platform || 'Workstation'} · ${navigator.userAgent.slice(0, 48)}`;
 
     // Clear auth failure buffer for this user
@@ -1699,27 +1884,51 @@ class MasCsiEngine {
   // -------------------------------------------------------------------------
   // REAL LAB GATED AUTHENTICATION (Strict: Only correct credentials unlock)
   // -------------------------------------------------------------------------
-  public async loginRealLab(username: string, passwordPlain: string): Promise<{ success: boolean; error?: string; user?: SecurityUser }> {
+  public async loginRealLab(
+    username: string,
+    passwordPlain: string,
+    options?: { simulateOutsideOrg?: boolean; locationMeta?: any }
+  ): Promise<{ success: boolean; error?: string; user?: SecurityUser; outsideOrgAlert?: boolean }> {
     const user = this.users.find(u => u.username.toLowerCase() === username.toLowerCase());
     const hashAttempt = await computeSha256(passwordPlain);
 
-    if (!user || user.password_hash !== hashAttempt) {
+    if (!user) {
       this.failedLabLoginAttempts += 1;
-      this.handleAuthFailure(username || 'unknown', 'Real Lab credential mismatch');
+      this.handleAuthFailure(username || 'unknown', 'Real Lab unregistered account');
 
       this.addAuditLog({
         actor_username: username || 'anonymous',
         actor_role: 'Unauthenticated',
-        action: 'REAL_LAB_ACCESS_DENIED',
+        action: 'REAL_LAB_UNREGISTERED_DENIED',
         target: 'Real Lab Workspace',
-        details: `Failed authentication attempt #${this.failedLabLoginAttempts} for Real Lab access.`,
+        details: `Access attempt blocked for unregistered user identity '${username}'. Registration required.`,
         ip_address: '127.0.0.1',
         status: 'DENIED',
       });
 
       return {
         success: false,
-        error: `Authentication failed. Invalid username or password for Real Lab. (Attempt ${this.failedLabLoginAttempts})`,
+        error: `Access Denied: Unregistered Identity '${username}'. You must be registered first before you can access the Real Lab environment. Please click 'Register New Account' below.`,
+      };
+    }
+
+    if (user.password_hash !== hashAttempt) {
+      this.failedLabLoginAttempts += 1;
+      this.handleAuthFailure(username, 'Real Lab credential mismatch');
+
+      this.addAuditLog({
+        actor_username: username,
+        actor_role: user.role,
+        action: 'REAL_LAB_ACCESS_DENIED',
+        target: 'Real Lab Workspace',
+        details: `Failed authentication attempt #${this.failedLabLoginAttempts} for Real Lab access (password mismatch).`,
+        ip_address: '127.0.0.1',
+        status: 'DENIED',
+      });
+
+      return {
+        success: false,
+        error: `Authentication failed. Invalid password for Real Lab account '${username}'.`,
       };
     }
 
@@ -1741,7 +1950,26 @@ class MasCsiEngine {
     }
 
     // Capture exact device geolocation and timestamp during Real Lab login
-    const loc = await this.captureLoginLocation();
+    const isSimulatedOutside = options?.simulateOutsideOrg || false;
+    let loc = options?.locationMeta;
+    if (!loc) {
+      loc = await this.captureLoginLocation();
+      if (isSimulatedOutside) {
+        loc = {
+          latitude: 52.5200,
+          longitude: 13.4050,
+          accuracy: 50,
+          city: 'External Remote Hub (Unrecognized Network)',
+          country: 'Outside Authorized Zone',
+          label: 'Remote Origin (52.5200°, 13.4050°)',
+          is_real_browser: false,
+          is_outside_organization: true,
+        };
+      }
+    }
+
+    const isOutsideOrg = isSimulatedOutside || Boolean(loc.is_outside_organization);
+
     const now = new Date();
     const formattedTime = now.toLocaleString('en-US', {
       weekday: 'short',
@@ -1751,6 +1979,7 @@ class MasCsiEngine {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
+      fractionalSecondDigits: 3,
       timeZoneName: 'short',
     });
 
@@ -1764,7 +1993,8 @@ class MasCsiEngine {
     user.last_longitude = loc.longitude;
     user.last_location_accuracy_meters = loc.accuracy;
     user.last_location = `${loc.city} (${loc.latitude.toFixed(4)}°, ${loc.longitude.toFixed(4)}°)`;
-    user.last_ip = '127.0.0.1';
+    user.last_ip = isOutsideOrg ? '198.51.100.77' : '127.0.0.1';
+    user.is_outside_organization = isOutsideOrg;
     user.last_device_info = `${navigator.platform || 'Workstation'} · ${navigator.userAgent.slice(0, 48)}`;
 
     this.addAuditLog({
@@ -1773,18 +2003,22 @@ class MasCsiEngine {
       action: 'REAL_LAB_LOGIN_SUCCESS',
       target: 'Real Lab Workspace',
       details: `Authorized identity verified at [${formattedTime}] from [${user.last_location}] with SHA-256 seal. Session: ${this.labSessionId}`,
-      ip_address: '127.0.0.1',
+      ip_address: user.last_ip,
       status: 'SUCCESS',
     });
 
-    this.recordTelemetry({
+    const labEvent = this.recordTelemetry({
       event_type: 'real_lab_login_success',
-      severity: 'INFO',
-      message: `User '${user.username}' successfully authenticated and unlocked Real Lab at ${formattedTime} from ${loc.city}.`,
-      risk_score: 5,
-      detection_state: 'NORMAL',
-      detection_reason: `Legitimate authorized authentication into Real Lab from verified coordinates ${loc.latitude}°, ${loc.longitude}°`,
-      source_ip: '127.0.0.1',
+      severity: isOutsideOrg ? 'HIGH' : 'INFO',
+      message: isOutsideOrg
+        ? `🚨 [OUTSIDE ORG LAB LOGIN] User '${user.username}' accessed Real Lab from unauthorized remote origin: ${loc.city}`
+        : `User '${user.username}' successfully authenticated and unlocked Real Lab at ${formattedTime} from ${loc.city}.`,
+      risk_score: isOutsideOrg ? 88 : 5,
+      detection_state: isOutsideOrg ? 'CONFIRMED' : 'NORMAL',
+      detection_reason: isOutsideOrg
+        ? `Deterministic Rule Trigger: Real Lab accessed from outside authorized corporate perimeter (${loc.latitude}°, ${loc.longitude}°). Tripwire dispatched to Super Admin.`
+        : `Legitimate authorized authentication into Real Lab from verified coordinates ${loc.latitude}°, ${loc.longitude}°`,
+      source_ip: user.last_ip,
       destination_ip: '127.0.0.1',
       protocol: 'HTTPS',
       source_port: 52101,
@@ -1810,17 +2044,35 @@ class MasCsiEngine {
         status: 'GRANTED',
         exact_time: formattedTime,
         coordinates: { lat: loc.latitude, lon: loc.longitude, accuracy: loc.accuracy },
+        is_outside_organization: isOutsideOrg,
       }),
-      ml_label: 'Normal Lab Login',
+      ml_label: isOutsideOrg ? 'Anomalous Remote Real Lab Access' : 'Normal Lab Login',
       ml_confidence: 0.99,
-      ml_anomaly: false,
+      ml_anomaly: isOutsideOrg,
       evidence_quality: 'HIGH',
-      mitre_technique: 'N/A',
-      mitre_tactic: 'N/A',
+      mitre_technique: isOutsideOrg ? 'T1078' : 'N/A',
+      mitre_tactic: isOutsideOrg ? 'Initial Access' : 'N/A',
     });
 
+    if (isOutsideOrg) {
+      await this.createIncidentFromDetection({
+        event: labEvent,
+        title: `CRITICAL: Remote Real Lab Access Outside Geofence by '${user.username}'`,
+        attack_type: 'Unrecognized Geographical Real Lab Access (T1078)',
+        detection_state: 'CONFIRMED',
+        severity: 'HIGH',
+        risk_score: 88,
+        confidence: 0.96,
+        mitre_technique: 'T1078',
+        mitre_tactic: 'Initial Access',
+        detection_reason: `Deterministic Rule Trigger: Confidential Real Lab unlocked from remote origin (${loc.city} - ${loc.latitude}°, ${loc.longitude}°). Immediate alert sent to Admin Center.`,
+        summary: `Real Lab document storage was unlocked from an unapproved geographic location. Session monitored under high alert.`,
+        is_lab_scenario: false,
+      });
+    }
+
     this.notify();
-    return { success: true, user };
+    return { success: true, user, outsideOrgAlert: isOutsideOrg };
   }
 
   public logoutRealLab(): void {
@@ -1937,6 +2189,7 @@ class MasCsiEngine {
       last_modified_at: now,
       last_modified_by: this.labUser.username,
       original_sha256: sha256,
+      original_content: content,
       current_sha256: sha256,
       is_tampered: false,
       classification,
@@ -2080,6 +2333,22 @@ class MasCsiEngine {
         is_lab_scenario: false,
       });
 
+      // Automated FIM notification sent to Admin and File Owner
+      this.fileIntegrityNotifications.unshift({
+        notification_id: generateSimpleId('NOTIF'),
+        file_id: file.file_id,
+        file_name: file.name,
+        original_owner: file.created_by,
+        tampered_by: this.labUser.username,
+        timestamp: now,
+        original_sha256: prevSha256,
+        tampered_sha256: newSha256,
+        severity: 'CRITICAL',
+        status: 'PENDING_REVIEW',
+        message: `Integrity Drift Alert: Stored file '${file.name}' created by '${file.created_by}' was modified by '${this.labUser.username}'. SHA-256 hash altered. Revert option available.`,
+        can_revert: true,
+      });
+
       this.notify();
       return { file, tamperedByOther: true };
     } else {
@@ -2185,32 +2454,77 @@ class MasCsiEngine {
       is_lab_scenario: true,
     });
 
+    // Automated notification to Admin & Original Owner
+    this.fileIntegrityNotifications.unshift({
+      notification_id: generateSimpleId('NOTIF'),
+      file_id: file.file_id,
+      file_name: file.name,
+      original_owner: file.created_by,
+      tampered_by: attackerName,
+      timestamp: now,
+      original_sha256: file.original_sha256,
+      tampered_sha256: newSha256,
+      severity: 'CRITICAL',
+      status: 'PENDING_REVIEW',
+      message: `🚨 MALICIOUS INTEGRITY TAMPER: File '${file.name}' owned by '${file.created_by}' was tampered by '${attackerName}'. SHA-256 altered from ${file.original_sha256.slice(0, 12)}... to ${newSha256.slice(0, 12)}... Original owner can revert now.`,
+      can_revert: true,
+    });
+
     this.notify();
     return file;
   }
 
-  public async restoreSecureFile(fileId: string): Promise<SecureLabFile> {
+  public async restoreSecureFile(fileId: string, actorUsername?: string): Promise<SecureLabFile> {
     const file = this.secureFiles.find(f => f.file_id === fileId);
     if (!file) throw new Error('File not found');
 
+    // Revert back to the data the employee had stored first
+    if (file.original_content) {
+      file.content = file.original_content;
+    }
     file.current_sha256 = file.original_sha256;
     file.is_tampered = false;
     file.last_modified_at = new Date().toISOString();
     file.last_modified_by = file.created_by;
 
+    const actor = actorUsername || this.labUser?.username || file.created_by;
+
     file.history.unshift({
       audit_id: generateSimpleId('AUD-RESTORE'),
       timestamp: new Date().toISOString(),
-      modified_by: this.labUser?.username || file.created_by,
+      modified_by: actor,
       action: 'RESTORED',
       previous_sha256: 'TAMPERED_STATE',
       new_sha256: file.original_sha256,
       is_authorized: true,
-      notes: 'File restored to original authorized version and re-sealed with original SHA-256 digest.',
+      notes: `File reverted back to the data employee '${file.created_by}' stored first, re-sealed with original SHA-256 digest.`,
+    });
+
+    // Mark all notifications for this file as REVERTED
+    this.fileIntegrityNotifications.forEach(n => {
+      if (n.file_id === file.file_id) {
+        n.status = 'REVERTED';
+        n.can_revert = false;
+        n.message = `✓ REVERTED: Document '${file.name}' restored back to pristine data created by ${file.created_by}.`;
+      }
+    });
+
+    this.addAuditLog({
+      actor_username: actor,
+      actor_role: 'Authorized Revert',
+      action: 'FILE_INTEGRITY_REVERTED',
+      target: file.name,
+      details: `File '${file.name}' restored back to original version and hash ${file.original_sha256.slice(0, 16)}... by ${actor}`,
+      ip_address: '127.0.0.1',
+      status: 'SUCCESS',
     });
 
     this.notify();
     return file;
+  }
+
+  public async revertFileToOriginal(fileId: string, actorUsername?: string): Promise<SecureLabFile> {
+    return this.restoreSecureFile(fileId, actorUsername);
   }
 
   // Cryptographically sign a secure file with HMAC / verified employee key

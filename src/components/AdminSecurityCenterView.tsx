@@ -35,10 +35,17 @@ import {
   Plus,
   Eye,
   EyeOff,
+  RotateCcw,
+  BellRing,
+  Clock,
+  Compass,
+  FileWarning,
+  ExternalLink,
+  ShieldCheck,
   MapPin
 } from 'lucide-react';
 import { store } from '../services/store';
-import { UserRole, FirewallRule } from '../types/mas_csi';
+import { UserRole, FirewallRule, SecureLabFile } from '../types/mas_csi';
 
 export const AdminSecurityCenterView: React.FC = () => {
   const users = store.users;
@@ -46,9 +53,12 @@ export const AdminSecurityCenterView: React.FC = () => {
   const currentUser = store.currentUser;
   const securityPolicy = store.systemSecurityPolicy;
   const firewallRules = store.firewallRules;
+  const secureFiles = store.secureFiles;
+  const fileNotifications = store.fileIntegrityNotifications;
 
   // Active Admin Sub-tab
-  const [adminTab, setAdminTab] = useState<'users' | 'policies' | 'firewall' | 'audit_logs'>('users');
+  const [adminTab, setAdminTab] = useState<'users' | 'fim_alerts' | 'telemetry' | 'policies' | 'firewall' | 'audit_logs'>('users');
+  const [adminDiffFile, setAdminDiffFile] = useState<SecureLabFile | null>(null);
 
   // New user modal state
   const [showAddUser, setShowAddUser] = useState(false);
@@ -254,10 +264,12 @@ export const AdminSecurityCenterView: React.FC = () => {
       {/* Admin Navigation Tabs */}
       <div className="flex border-b border-slate-800 gap-2 pb-1 overflow-x-auto">
         {[
-          { id: 'users', label: `User Management (${users.length})`, icon: UserCheck },
-          { id: 'policies', label: 'Platform Security Policies', icon: Sliders },
-          { id: 'firewall', label: `Perimeter Firewall Rules (${firewallRules.length})`, icon: Shield },
-          { id: 'audit_logs', label: `Master Audit Logs (${auditLogs.length})`, icon: FileText },
+          { id: 'users', label: `1. User Directory & RBAC (${users.length})`, icon: UserCheck },
+          { id: 'fim_alerts', label: `2. FIM & File Revert Console (${fileNotifications.length})`, icon: ShieldAlert },
+          { id: 'telemetry', label: `3. Geofence & Outside-Org Alerts (${users.filter(u => u.is_outside_organization).length})`, icon: Compass },
+          { id: 'policies', label: '4. Platform Policies', icon: Sliders },
+          { id: 'firewall', label: `5. Perimeter Firewall (${firewallRules.length})`, icon: Shield },
+          { id: 'audit_logs', label: `6. Master Audit Logs (${auditLogs.length})`, icon: FileText },
         ].map(tab => {
           const Icon = tab.icon;
           const isActive = adminTab === tab.id;
@@ -416,7 +428,363 @@ export const AdminSecurityCenterView: React.FC = () => {
         </div>
       )}
 
-      {/* SUB-TAB 2: SECURITY POLICIES */}
+      {/* SUB-TAB 2: FIM & FILE INTEGRITY REVERT STATION */}
+      {adminTab === 'fim_alerts' && (
+        <div className="space-y-5">
+          {/* FIM KPI Metrics */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg">
+              <span className="text-slate-400 text-[10px] uppercase font-bold block">Monitored Documents</span>
+              <div className="text-xl font-bold text-slate-100 font-mono mt-1">{secureFiles.length}</div>
+              <span className="text-[10px] text-cyan-400 mt-1 block">SHA-256 Genesis Sealed</span>
+            </div>
+
+            <div className="p-4 bg-slate-900 border border-rose-900/60 rounded-lg">
+              <span className="text-rose-400 text-[10px] uppercase font-bold block">Tampered / Drifted Files</span>
+              <div className="text-xl font-bold text-rose-400 font-mono mt-1">
+                {secureFiles.filter(f => f.is_tampered).length}
+              </div>
+              <span className="text-[10px] text-slate-400 mt-1 block">Requires SOC / Owner Revert</span>
+            </div>
+
+            <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg">
+              <span className="text-slate-400 text-[10px] uppercase font-bold block">Integrity Notifications</span>
+              <div className="text-xl font-bold text-amber-400 font-mono mt-1">{fileNotifications.length}</div>
+              <span className="text-[10px] text-amber-300 mt-1 block">Automated Dispatch Log</span>
+            </div>
+
+            <div className="p-4 bg-slate-900 border border-emerald-900/60 rounded-lg">
+              <span className="text-emerald-400 text-[10px] uppercase font-bold block">Deterministic Revert</span>
+              <div className="text-xl font-bold text-emerald-400 font-mono mt-1">Active</div>
+              <span className="text-[10px] text-slate-400 mt-1 block">Rollback to First Stored State</span>
+            </div>
+          </div>
+
+          {/* Automated Notification Stream to Admin & Owner */}
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <BellRing className="w-4 h-4 text-rose-400" />
+                <h3 className="font-bold text-slate-200 text-sm">
+                  Automated Security Center Notification Feed (Admin &amp; Owner Broadcast)
+                </h3>
+              </div>
+              <span className="text-[10px] px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-800 font-bold">
+                Live Drift Dispatcher
+              </span>
+            </div>
+
+            {fileNotifications.length === 0 ? (
+              <div className="p-6 text-center text-slate-500 border border-dashed border-slate-800 rounded">
+                ✓ No integrity violations recorded. All stored documents match verified genesis SHA-256 checksums.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {fileNotifications.map((notif) => {
+                  const targetFile = secureFiles.find(f => f.file_id === notif.file_id);
+                  return (
+                    <div
+                      key={notif.notification_id}
+                      className={`p-3.5 rounded border space-y-2 ${
+                        notif.status === 'REVERTED'
+                          ? 'bg-emerald-950/20 border-emerald-800/80'
+                          : 'bg-rose-950/30 border-rose-600'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={`w-4 h-4 ${notif.status === 'REVERTED' ? 'text-emerald-400' : 'text-rose-400'}`} />
+                          <strong className="text-slate-100 text-xs">{notif.file_name}</strong>
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                            notif.status === 'REVERTED' ? 'bg-emerald-950 text-emerald-300' : 'bg-rose-950 text-rose-300'
+                          }`}>
+                            {notif.status}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-500">{notif.timestamp.slice(0, 19).replace('T', ' ')}</span>
+                      </div>
+
+                      <p className="text-[11px] text-slate-300 leading-relaxed">{notif.message}</p>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[10px] font-mono bg-slate-950/80 p-2 rounded border border-slate-800">
+                        <div>
+                          <span className="text-slate-500">Genesis SHA-256: </span>
+                          <span className="text-emerald-400 break-all">{notif.original_sha256}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Tampered SHA-256: </span>
+                          <span className="text-rose-400 break-all">{notif.tampered_sha256}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[10px] pt-1 border-t border-slate-800/80 flex-wrap gap-2">
+                        <div className="text-slate-400">
+                          File Owner: <strong className="text-cyan-300">{notif.original_owner}</strong> · Modified by: <strong className="text-amber-300">{notif.tampered_by}</strong>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {targetFile && (
+                            <button
+                              onClick={() => setAdminDiffFile(targetFile)}
+                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-[10px] cursor-pointer"
+                            >
+                              Inspect Diff
+                            </button>
+                          )}
+                          {notif.can_revert && targetFile && (
+                            <button
+                              onClick={async () => {
+                                await store.restoreSecureFile(targetFile.file_id, currentUser?.username || 'admin');
+                                setActionMessage({
+                                  type: 'success',
+                                  text: `Document '${targetFile.name}' successfully reverted to verified genesis state!`,
+                                });
+                                setTimeout(() => setActionMessage(null), 5000);
+                              }}
+                              className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded cursor-pointer transition flex items-center gap-1.5"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span>Revert File Back to Genesis State</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Monitored Documents Table */}
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-4">
+            <h3 className="font-bold text-slate-200 text-sm flex items-center gap-2 border-b border-slate-800 pb-3">
+              <ShieldCheck className="w-4 h-4 text-cyan-400" />
+              Real Lab File Directory &amp; Hash Integrity Verification
+            </h3>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-400 text-[10px] uppercase">
+                    <th className="p-2.5">File Name</th>
+                    <th className="p-2.5">Owner</th>
+                    <th className="p-2.5">Genesis SHA-256</th>
+                    <th className="p-2.5">Current SHA-256</th>
+                    <th className="p-2.5">Integrity State</th>
+                    <th className="p-2.5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-[11px]">
+                  {secureFiles.map((file) => (
+                    <tr key={file.file_id} className="hover:bg-slate-800/40">
+                      <td className="p-2.5 font-bold text-slate-200">{file.name}</td>
+                      <td className="p-2.5 text-cyan-300">{file.created_by}</td>
+                      <td className="p-2.5 font-mono text-[10px] text-slate-400">{file.original_sha256.slice(0, 16)}...</td>
+                      <td className="p-2.5 font-mono text-[10px]">
+                        <span className={file.is_tampered ? 'text-rose-400 font-bold' : 'text-slate-400'}>
+                          {file.current_sha256.slice(0, 16)}...
+                        </span>
+                      </td>
+                      <td className="p-2.5">
+                        {file.is_tampered ? (
+                          <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-rose-950 text-rose-300 border border-rose-700">
+                            HASH MISMATCH
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-700">
+                            VALIDATED OK
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-2.5 text-right space-x-1.5">
+                        <button
+                          onClick={() => setAdminDiffFile(file)}
+                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-[10px] cursor-pointer"
+                        >
+                          Diff
+                        </button>
+                        {file.is_tampered ? (
+                          <button
+                            onClick={async () => {
+                              await store.restoreSecureFile(file.file_id, currentUser?.username || 'admin');
+                              setActionMessage({
+                                type: 'success',
+                                text: `Document '${file.name}' restored to original data stored by '${file.created_by}'.`,
+                              });
+                              setTimeout(() => setActionMessage(null), 5000);
+                            }}
+                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded text-[10px] cursor-pointer"
+                          >
+                            Revert
+                          </button>
+                        ) : (
+                          <button
+                            onClick={async () => {
+                              const badContent = (file.original_content || file.content) + '\n[ATTACKER_INJECTED_UNAUTHORIZED_PAYLOAD]';
+                              await store.simulateAttackerTamper(file.file_id, badContent, 'rogue_attacker');
+                              setActionMessage({
+                                type: 'error',
+                                text: `Simulated tamper triggered on '${file.name}'. Automated notification sent to Admin and Owner!`,
+                              });
+                              setTimeout(() => setActionMessage(null), 6000);
+                            }}
+                            className="px-2 py-1 bg-amber-950 hover:bg-amber-900 text-amber-200 border border-amber-800 rounded text-[10px] cursor-pointer"
+                          >
+                            Test Tamper
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-TAB 3: GEOFENCE & OUTSIDE-ORGANIZATION TELEMETRY */}
+      {adminTab === 'telemetry' && (
+        <div className="space-y-5">
+          {/* Geofence Breach Banner */}
+          {users.some(u => u.is_outside_organization) && (
+            <div className="p-4 bg-rose-950/80 border border-rose-600 rounded-lg text-rose-200 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+              <div className="space-y-1 text-xs">
+                <strong className="text-sm font-bold block text-rose-100">
+                  CRITICAL: Outside-Organization Login Perimeter Breaches Detected!
+                </strong>
+                <p>
+                  One or more users have authenticated from external, unauthorized GPS coordinates outside the corporate physical geofence. High-priority security incidents have been automatically generated for immediate investigation.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 flex-wrap gap-2">
+              <div>
+                <h3 className="font-bold text-slate-200 text-sm flex items-center gap-2">
+                  <Compass className="w-4 h-4 text-cyan-400" />
+                  Real-Time User Login Geography &amp; Exact Timestamp Telemetry
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Tracks exact local hour:minute:second:millisecond timestamps, GPS coordinates, and flags out-of-perimeter logins
+                </p>
+              </div>
+              <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">
+                WGS-84 Geolocation Engine
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-950 border-b border-slate-800 text-slate-400">
+                  <tr>
+                    <th className="p-3">User</th>
+                    <th className="p-3">Role</th>
+                    <th className="p-3">Exact Login Time (Local &amp; UTC)</th>
+                    <th className="p-3">Physical Coordinates &amp; City</th>
+                    <th className="p-3">Geofence Compliance</th>
+                    <th className="p-3 text-right">Containment Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {users.map(u => (
+                    <tr key={u.user_id} className={`hover:bg-slate-800/40 transition ${u.is_outside_organization ? 'bg-rose-950/20' : ''}`}>
+                      <td className="p-3">
+                        <strong className="text-slate-100">{u.username}</strong>
+                        <div className="text-[10px] text-slate-500">{u.email}</div>
+                      </td>
+                      <td className="p-3">
+                        <span className="px-2 py-0.5 rounded text-[10px] bg-slate-950 border border-slate-800 text-slate-300">
+                          {u.role}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        {u.last_login_formatted_time ? (
+                          <div>
+                            <span className="text-cyan-300 font-semibold block">{u.last_login_formatted_time}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">{u.last_login}</span>
+                          </div>
+                        ) : u.last_login ? (
+                          <span className="text-slate-400 font-mono text-[11px]">{u.last_login}</span>
+                        ) : (
+                          <span className="text-slate-600 italic">No login session</span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        {u.last_location ? (
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5 text-slate-200">
+                              <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              <span>{u.last_location}</span>
+                            </div>
+                            {u.last_latitude && (
+                              <a
+                                href={`https://www.google.com/maps/search/?api=1&query=${u.last_latitude},${u.last_longitude}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[10px] text-cyan-400 hover:underline flex items-center gap-1"
+                              >
+                                <span>Verify in Google Maps</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-slate-600 italic">No telemetry recorded</span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        {u.is_outside_organization ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-600 flex items-center gap-1 w-max">
+                            <AlertTriangle className="w-3 h-3 text-rose-400" />
+                            OUTSIDE ORGANIZATION
+                          </span>
+                        ) : u.last_location ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-700 flex items-center gap-1 w-max">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            AUTHORIZED PERIMETER
+                          </span>
+                        ) : (
+                          <span className="text-slate-500 text-[10px]">Pending Lock</span>
+                        )}
+                      </td>
+                      <td className="p-3 text-right space-x-1.5">
+                        {isSuperAdmin && u.username !== 'admin' && (
+                          <>
+                            <button
+                              onClick={() => handleRevokeSessions(u.user_id)}
+                              className="px-2 py-1 bg-amber-950 hover:bg-amber-900 text-amber-300 border border-amber-800 rounded text-[10px] cursor-pointer"
+                              title="Sever active connection"
+                            >
+                              Revoke
+                            </button>
+                            <button
+                              onClick={() => handleSuspendToggle(u.user_id, u.is_suspended)}
+                              className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                                u.is_suspended
+                                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                                  : 'bg-rose-950 text-rose-300 border border-rose-700'
+                              }`}
+                            >
+                              {u.is_suspended ? 'Restore' : 'Suspend'}
+                            </button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-TAB 4: SECURITY POLICIES */}
       {adminTab === 'policies' && (
         <div className="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-4">
           <h2 className="font-bold text-slate-200 text-sm flex items-center gap-2 border-b border-slate-800 pb-3">
@@ -824,6 +1192,80 @@ export const AdminSecurityCenterView: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Side-by-Side Diff & Integrity Inspector Modal */}
+      {adminDiffFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 font-mono">
+          <div className="bg-slate-900 border border-slate-700 rounded-lg max-w-4xl w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <FileWarning className="w-5 h-5 text-rose-400" />
+                <h3 className="text-sm font-bold text-slate-100">
+                  Cryptographic Integrity Inspector: {adminDiffFile.name}
+                </h3>
+              </div>
+              <button
+                onClick={() => setAdminDiffFile(null)}
+                className="text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <div className="font-bold text-emerald-400 text-xs mb-1 flex items-center justify-between">
+                  <span>Authentic Genesis (Owner: {adminDiffFile.created_by})</span>
+                  <span className="text-[10px] font-mono">SHA-256: {adminDiffFile.original_sha256.slice(0, 10)}...</span>
+                </div>
+                <div className="p-3 bg-slate-950 border border-emerald-900/60 rounded text-slate-300 text-xs font-mono h-64 overflow-y-auto whitespace-pre-wrap">
+                  {adminDiffFile.original_content || adminDiffFile.content}
+                </div>
+              </div>
+
+              <div>
+                <div className="font-bold text-rose-400 text-xs mb-1 flex items-center justify-between">
+                  <span>Current / Tampered (Modified: {adminDiffFile.last_modified_by})</span>
+                  <span className="text-[10px] font-mono">SHA-256: {adminDiffFile.current_sha256.slice(0, 10)}...</span>
+                </div>
+                <div className="p-3 bg-rose-950/20 border border-rose-900/80 rounded text-rose-200 text-xs font-mono h-64 overflow-y-auto whitespace-pre-wrap">
+                  {adminDiffFile.content}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center pt-2 border-t border-slate-800 flex-wrap gap-2">
+              <span className="text-[11px] text-slate-400">
+                Tampered by: <strong className="text-amber-300">{adminDiffFile.tampered_by || adminDiffFile.last_modified_by}</strong> · Owner: <strong className="text-cyan-300">{adminDiffFile.created_by}</strong>
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setAdminDiffFile(null)}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={async () => {
+                    await store.restoreSecureFile(adminDiffFile.file_id, currentUser?.username || 'admin');
+                    setActionMessage({
+                      type: 'success',
+                      text: `Document '${adminDiffFile.name}' restored back to verified original data stored by '${adminDiffFile.created_by}'.`,
+                    });
+                    setAdminDiffFile(null);
+                    setTimeout(() => setActionMessage(null), 5000);
+                  }}
+                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded cursor-pointer flex items-center gap-1.5 text-xs"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Revert to Authentic Version</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -24,6 +24,7 @@ import { RealLabView } from './components/RealLabView';
 import { AdminSecurityCenterView } from './components/AdminSecurityCenterView';
 import { ZipExportModal } from './components/ZipExportModal';
 import { RoleLoginModal } from './components/RoleLoginModal';
+import { EmailInboxModal } from './components/EmailInboxModal';
 import { InteractiveCyber3DBackground } from './components/InteractiveCyber3DBackground';
 import { Incident, UserRole } from './types/mas_csi';
 import { Download, ShieldCheck, Database, Lock } from 'lucide-react';
@@ -33,6 +34,7 @@ export default function App() {
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [isZipModalOpen, setIsZipModalOpen] = useState(false);
   const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
+  const [isEmailInboxOpen, setIsEmailInboxOpen] = useState(false);
   const [is3dEnabled, setIs3dEnabled] = useState(true);
   const [, setStoreVersion] = useState(0);
 

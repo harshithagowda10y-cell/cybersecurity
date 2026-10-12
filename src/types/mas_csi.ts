@@ -56,8 +56,10 @@ export interface SecureLabFile {
   last_modified_at: string;
   last_modified_by: string;
   original_sha256: string;
+  original_content?: string;
   current_sha256: string;
   is_tampered: boolean;
+  tampered_by?: string | null;
   history: FileAuditEntry[];
   classification?: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED';
   is_canary_trap?: boolean;
@@ -240,6 +242,41 @@ export interface SecurityUser {
   last_longitude?: number | null;
   last_location_accuracy_meters?: number | null;
   last_device_info?: string | null;
+  totp_secret?: string;
+  totp_enabled?: boolean;
+  is_outside_organization?: boolean;
+  last_timezone?: string | null;
+}
+
+export interface DispatchedEmail {
+  email_id: string;
+  to_email: string;
+  to_username: string;
+  from_address: string;
+  subject: string;
+  otp_code?: string;
+  timestamp: string;
+  formatted_time: string;
+  expires_at: string;
+  location_label?: string;
+  body_text: string;
+  is_read: boolean;
+  email_type: 'OTP_VERIFICATION' | 'WELCOME_REGISTRATION' | 'SECURITY_ALERT';
+}
+
+export interface FileIntegrityNotification {
+  notification_id: string;
+  file_id: string;
+  file_name: string;
+  original_owner: string;
+  tampered_by: string;
+  timestamp: string;
+  original_sha256: string;
+  tampered_sha256: string;
+  severity: 'CRITICAL' | 'HIGH';
+  status: 'PENDING_REVIEW' | 'REVERTED' | 'ACKNOWLEDGED';
+  message: string;
+  can_revert: boolean;
 }
 
 export interface AuditLog {
